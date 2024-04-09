@@ -13,3 +13,6 @@ class FieldElement:
         if other is None:
             return False
         return self.num == other.num and self.prime == other.prime
+
+    def __neq__(self, other):
+        return not (self == other)
