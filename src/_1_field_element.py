@@ -34,3 +34,7 @@ class FieldElement:
             raise TypeError("Cannot multiply two numbers in different Fields")
         num = (self.num * other.num) % self.prime
         return self.__class__(num, self.prime)
+
+    def __pow__(self, exponent):
+        num = pow(self.num, exponent, self.prime)  # is more efficient than (x**y) % z
+        return self.__class__(num, self.prime)
