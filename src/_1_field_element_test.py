@@ -40,3 +40,8 @@ class TestFieldElement:
         b = FieldElement(7, 19)
         c = FieldElement(3, 19)
         assert a / b == c
+
+    def test_negative_pow(self):
+        a = FieldElement(7, 13)
+        b = FieldElement(8, 13)
+        assert a**-3 == b
