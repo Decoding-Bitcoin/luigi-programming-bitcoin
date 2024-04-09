@@ -16,3 +16,9 @@ class FieldElement:
 
     def __neq__(self, other):
         return not (self == other)
+
+    def __add__(self, other):
+        if self.prime != other.prime:
+            raise TypeError("Cannot add two numbers in different Fields")
+        num = (self.num + other.num) % self.prime
+        return self.__class__(num, self.prime)

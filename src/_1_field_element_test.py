@@ -11,3 +11,9 @@ class TestFieldElement:
         a = FieldElement(7, 13)
         b = FieldElement(6, 13)
         assert a != b
+
+    def test_add(self):
+        a = FieldElement(7, 13)
+        b = FieldElement(12, 13)
+        c = FieldElement(6, 13)
+        assert a + b == c
