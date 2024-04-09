@@ -38,3 +38,18 @@ class FieldElement:
     def __pow__(self, exponent):
         num = pow(self.num, exponent, self.prime)  # is more efficient than (x**y) % z
         return self.__class__(num, self.prime)
+
+    def __truediv__(self, other):
+        """
+        Division is multiplying by the inverse of the other number.
+
+        The inverse of a number in finite field is the number raised to the
+        power of prime - 2.
+
+        Example in finite field F_19:
+        2 / 7 = 2 * 1/7 = 2 * 7 ** (19 - 2) = 2 * 7 ** 17
+        """
+        if self.prime != other.prime:
+            raise TypeError("Cannot divide two numbers in different Fields")
+        num = self.num * pow(other.num, self.prime - 2, self.prime) % self.prime
+        return self.__class__(num, self.prime)

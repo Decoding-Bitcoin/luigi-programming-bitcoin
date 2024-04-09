@@ -34,3 +34,9 @@ class TestFieldElement:
         a = FieldElement(3, 13)
         b = FieldElement(1, 13)
         assert a**3 == b
+
+    def test_truediv(self):
+        a = FieldElement(2, 19)
+        b = FieldElement(7, 19)
+        c = FieldElement(3, 19)
+        assert a / b == c
