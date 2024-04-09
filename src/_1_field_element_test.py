@@ -23,3 +23,9 @@ class TestFieldElement:
         b = FieldElement(12, 13)
         c = FieldElement(8, 13)
         assert a - b == c
+
+    def test_mul(self):
+        a = FieldElement(3, 13)
+        b = FieldElement(12, 13)
+        c = FieldElement(10, 13)
+        assert a * b == c
