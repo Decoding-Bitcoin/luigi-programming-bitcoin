@@ -17,3 +17,9 @@ class TestFieldElement:
         b = FieldElement(12, 13)
         c = FieldElement(6, 13)
         assert a + b == c
+
+    def test_sub(self):
+        a = FieldElement(7, 13)
+        b = FieldElement(12, 13)
+        c = FieldElement(8, 13)
+        assert a - b == c
