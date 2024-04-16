@@ -46,7 +46,7 @@ class FieldElement:
         Division is multiplying by the inverse of the other number.
 
         The inverse of a number in finite field is the number raised to the
-        power of prime - 2.
+        power of prime - 2. (page 15)
 
         Example in finite field F_19:
         2 / 7 = 2 * 1/7 = 2 * 7 ** (19 - 2) = 2 * 7 ** 17
