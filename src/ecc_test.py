@@ -1,4 +1,4 @@
-from ecc import FieldElement, Point, S256Point, Signature, PrivateKey
+from ecc import FieldElement, Point, S256Point, Signature, PrivateKey, G, N, P
 
 
 class TestFieldElement:
@@ -131,7 +131,7 @@ class TestPoint:
 
 class TestS256Field:
     def test_g_order(self):
-        assert S256Point.N * S256Point.G() == S256Point.infinity()
+        assert N * G == S256Point.infinity()
 
     def test_verify_1(self):
         z = 0xEC208BAA0FC1C19F708A9CA96FDEFF3AC3F230BB4A7BA4AEDE4942AD003C0F60
@@ -168,6 +168,49 @@ class TestS256Field:
             s=0xC7207FEE197D27C618AEA621406F6BF5EF6FCA38681D82B2F06FDDBDCE6FEAB5,
         )
         assert not p.verify(z, sig)
+
+
+class Test256Point:
+    def test_sec_uncompressed(self):
+        point = S256Point(
+            0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+            0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
+        )
+        assert point.sec(compressed=False) == b"\x04" + bytes.fromhex(
+            "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798"
+        ) + bytes.fromhex(
+            "483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8"
+        )
+
+    def test_sec_compressed(self):
+        point = S256Point(
+            0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+            0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
+        )
+        assert point.sec(compressed=True) == b"\x02" + bytes.fromhex(
+            "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798"
+        )
+        point = S256Point(
+            0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+            P - 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8 % P,
+        )
+        assert point.sec(compressed=True) == b"\x03" + bytes.fromhex(
+            "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798"
+        )
+
+    def test_parse_uncompressed(self):
+        point = S256Point(
+            0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+            0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
+        )
+        assert S256Point.parse(point.sec(compressed=False)) == point
+
+    def test_parse_compressed(self):
+        point = S256Point(
+            0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+            P - 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8 % P,
+        )
+        assert S256Point.parse(point.sec(compressed=True)) == point
 
 
 class TestPrivateKey:
