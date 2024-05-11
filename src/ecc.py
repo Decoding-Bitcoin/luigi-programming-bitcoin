@@ -6,9 +6,11 @@ File to implement the Elliptic Curve Cryptography presents in the book
 import hmac
 import hashlib
 from helper import hash160, encode_base58_checksum
+import io
 
 
 class FieldElement:
+
     def __init__(self, num, prime):
         if num >= prime or num < 0:
             error = "Num {} not in field range 0 to {}".format(num, prime - 1)
@@ -24,7 +26,7 @@ class FieldElement:
             return False
         return self.num == other.num and self.prime == other.prime
 
-    def __neq__(self, other):
+    def __ne__(self, other):
         return not (self == other)
 
     def __add__(self, other):
@@ -66,6 +68,10 @@ class FieldElement:
         num = self.num * pow(other.num, self.prime - 2, self.prime) % self.prime
         return self.__class__(num, self.prime)
 
+    def __rmul__(self, coefficient):
+        num = (self.num * coefficient) % self.prime
+        return self.__class__(num=num, prime=self.prime)
+
 
 class Point:
     """
@@ -81,10 +87,6 @@ class Point:
             return
         if self.y**2 != self.x**3 + a * x + b:
             raise ValueError("({}, {}) is not on the curve".format(x, y))
-
-    @staticmethod
-    def infinity(a, b):
-        return Point(None, None, a, b)
 
     def __repr__(self) -> str:
         if self.x is None:
@@ -138,7 +140,10 @@ class Point:
         return result
 
 
+A = 0
+B = 7
 P = 2**256 - 2**32 - 977
+N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
 
 class S256Field(FieldElement):
@@ -151,27 +156,6 @@ class S256Field(FieldElement):
 
     def sqrt(self):
         return self ** ((P + 1) // 4)
-
-    @classmethod
-    def parse(self, sec_bin):
-        """returns a Point object from a SEC binary (not hex)"""
-        if sec_bin[0] == 4:
-            x = int.from_bytes(sec_bin[1:33], "big")
-            y = int.from_bytes(sec_bin[33:65], "big")
-            return S256Point(x=x, y=y)
-        is_even = sec_bin[0] == 2
-        x = S256Field(int.from_bytes(sec_bin[1:], "big"))
-        # right side of the equation y^2 = x^3 + 7
-        alpha = x**3 + S256Field(
-            B
-        )  # solve for left side beta = alpha.sqrt() if beta.num % 2 == 0: even_beta = beta odd_beta = S256Field(P - beta.num) else: even_beta = S256Field(P - beta.num) odd_beta = beta if is_even: return S256Point(x, even_beta) else: return S256Point(x, odd_beta)
-
-
-A = 0
-
-B = 7
-
-N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
 
 class S256Point(Point):
@@ -193,14 +177,14 @@ class S256Point(Point):
         coef = coefficient % N
         return super().__rmul__(coef)
 
-    @staticmethod
-    def infinity():
-        return S256Point(None, None)
-
     def verify(self, z, sig):
+        # By Fermat's Little Theorem, 1/s = pow(s, N-2, N)
         s_inv = pow(sig.s, N - 2, N)
+        # u = z / s
         u = z * s_inv % N
+        # v = r / s
         v = sig.r * s_inv % N
+        # u*G + v*P should have as the x coordinate, r
         total = u * G + v * self
         return total.x.num == sig.r
 
@@ -263,6 +247,7 @@ G = S256Point(
 
 
 class Signature:
+
     def __init__(self, r, s):
         self.r = r
         self.s = s
@@ -277,7 +262,7 @@ class Signature:
         # if rbin has a high bit, add a \x00
         if rbin[0] & 0x80:
             rbin = b"\x00" + rbin
-        result = bytes([2, len(rbin)]) + rbin
+        result = bytes([2, len(rbin)]) + rbin  # <1>
         sbin = self.s.to_bytes(32, byteorder="big")
         # remove all null bytes at the beginning
         sbin = sbin.lstrip(b"\x00")
@@ -287,8 +272,32 @@ class Signature:
         result += bytes([2, len(sbin)]) + sbin
         return bytes([0x30, len(result)]) + result
 
+    @classmethod
+    def parse(cls, signature_bin):
+        s = io.BytesIO(signature_bin)
+        compound = s.read(1)[0]
+        if compound != 0x30:
+            raise SyntaxError("Bad Signature")
+        length = s.read(1)[0]
+        if length + 2 != len(signature_bin):
+            raise SyntaxError("Bad Signature Length")
+        marker = s.read(1)[0]
+        if marker != 0x02:
+            raise SyntaxError("Bad Signature")
+        rlength = s.read(1)[0]
+        r = int.from_bytes(s.read(rlength), "big")
+        marker = s.read(1)[0]
+        if marker != 0x02:
+            raise SyntaxError("Bad Signature")
+        slength = s.read(1)[0]
+        s = int.from_bytes(s.read(slength), "big")
+        if len(signature_bin) != 6 + rlength + slength:
+            raise SyntaxError("Signature too long")
+        return cls(r, s)
+
 
 class PrivateKey:
+
     def __init__(self, secret):
         self.secret = secret
         self.point = secret * G
@@ -298,11 +307,16 @@ class PrivateKey:
 
     def sign(self, z):
         k = self.deterministic_k(z)
-        r = (k * G).x.num  # type: ignore
+        # r is the x coordinate of the resulting point k*G
+        r = (k * G).x.num
+        # remember 1/k = pow(k, N-2, N)
         k_inv = pow(k, N - 2, N)
+        # s = (z+r*secret) / k
         s = (z + r * self.secret) * k_inv % N
         if s > N / 2:
             s = N - s
+        # return an instance of Signature:
+        # Signature(r, s)
         return Signature(r, s)
 
     def deterministic_k(self, z):
