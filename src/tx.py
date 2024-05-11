@@ -1,22 +1,78 @@
+from io import BytesIO
+
+import json
+import requests
+
 from helper import (
+    encode_varint,
     hash256,
+    int_to_little_endian,
     little_endian_to_int,
     read_varint,
-    int_to_little_endian,
-    encode_varint,
 )
+from script import Script
 
-import requests
-import io
+
+class TxFetcher:
+    cache = {}
+
+    @classmethod
+    def get_url(cls, testnet=False):
+        if testnet:
+            return "https://blockstream.info/testnet/api/"
+        else:
+            return "https://blockstream.info/api/"
+
+    @classmethod
+    def fetch(cls, tx_id, testnet=False, fresh=False):
+        if fresh or (tx_id not in cls.cache):
+            url = "{}/tx/{}/hex".format(cls.get_url(testnet), tx_id)
+            response = requests.get(url)
+            try:
+                raw = bytes.fromhex(response.text.strip())
+            except ValueError:
+                raise ValueError("unexpected response: {}".format(response.text))
+            if raw[4] == 0:
+                raw = raw[:4] + raw[6:]
+                tx = Tx.parse(BytesIO(raw), testnet=testnet)
+                tx.locktime = little_endian_to_int(raw[-4:])
+            else:
+                tx = Tx.parse(BytesIO(raw), testnet=testnet)
+            if tx.id() != tx_id:  # <1>
+                raise ValueError("not the same id: {} vs {}".format(tx.id(), tx_id))
+            cls.cache[tx_id] = tx
+        cls.cache[tx_id].testnet = testnet
+        return cls.cache[tx_id]
+
+    @classmethod
+    def load_cache(cls, filename):
+        disk_cache = json.loads(open(filename, "r").read())
+        for k, raw_hex in disk_cache.items():
+            raw = bytes.fromhex(raw_hex)
+            if raw[4] == 0:
+                raw = raw[:4] + raw[6:]
+                tx = Tx.parse(BytesIO(raw))
+                tx.locktime = little_endian_to_int(raw[-4:])
+            else:
+                tx = Tx.parse(BytesIO(raw))
+            cls.cache[k] = tx
+
+    @classmethod
+    def dump_cache(cls, filename):
+        with open(filename, "w") as f:
+            to_dump = {k: tx.serialize().hex() for k, tx in cls.cache.items()}
+            s = json.dumps(to_dump, sort_keys=True, indent=4)
+            f.write(s)
 
 
 class Tx:
+
     def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False):
         self.version = version
-        self.tx_ins = tx_ins
+        self.tx_ins = tx_ins  # <1>
         self.tx_outs = tx_outs
         self.locktime = locktime
-        self.testnet = testnet
+        self.testnet = testnet  # <2>
 
     def __repr__(self):
         tx_ins = ""
@@ -42,18 +98,20 @@ class Tx:
         return hash256(self.serialize())[::-1]
 
     @classmethod
-    def parse(cls, stream, testnet=False):
-        serialized_version = stream.read(4)
-        version = little_endian_to_int(serialized_version)
-        serialized_num_inputs = read_varint(stream)
+    def parse(cls, s, testnet=False):
+        """Takes a byte stream and parses the transaction at the start
+        return a Tx object
+        """
+        version = little_endian_to_int(s.read(4))
+        num_inputs = read_varint(s)
         inputs = []
-        for _ in range(serialized_num_inputs):
-            inputs.append(TxIn.parse(stream))
-        serialized_num_outputs = read_varint(stream)
+        for _ in range(num_inputs):
+            inputs.append(TxIn.parse(s))
+        num_outputs = read_varint(s)
         outputs = []
-        for _ in range(serialized_num_outputs):
-            outputs.append(TxOut.parse(stream))
-        locktime = little_endian_to_int(stream.read(4))
+        for _ in range(num_outputs):
+            outputs.append(TxOut.parse(s))
+        locktime = little_endian_to_int(s.read(4))
         return cls(version, inputs, outputs, locktime, testnet=testnet)
 
     def serialize(self):
@@ -70,8 +128,11 @@ class Tx:
 
     def fee(self):
         """Returns the fee of this transaction in satoshi"""
-        input_sum = sum([tx_in.value(testnet=self.testnet) for tx_in in self.tx_ins])
-        output_sum = sum([tx_out.amount for tx_out in self.tx_outs])
+        input_sum, output_sum = 0, 0
+        for tx_in in self.tx_ins:
+            input_sum += tx_in.value(self.testnet)
+        for tx_out in self.tx_outs:
+            output_sum += tx_out.amount
         return input_sum - output_sum
 
 
@@ -93,6 +154,9 @@ class TxIn:
 
     @classmethod
     def parse(cls, s):
+        """Takes a byte stream and parses the tx_input at the start
+        return a TxIn object
+        """
         prev_tx = s.read(32)[::-1]
         prev_index = little_endian_to_int(s.read(4))
         script_sig = Script.parse(s)
@@ -111,17 +175,22 @@ class TxIn:
         return TxFetcher.fetch(self.prev_tx.hex(), testnet=testnet)
 
     def value(self, testnet=False):
-        """Get the output value by looking up the tx hash. Returns the amount in satoshi."""
+        """Get the output value by looking up the tx hash.
+        Returns the amount in satoshi.
+        """
         tx = self.fetch_tx(testnet=testnet)
         return tx.tx_outs[self.prev_index].amount
 
     def script_pubkey(self, testnet=False):
-        """Get the ScriptPubKey by looking up the tx hash. Returns a Script object."""
+        """Get the ScriptPubKey by looking up the tx hash.
+        Returns a Script object.
+        """
         tx = self.fetch_tx(testnet=testnet)
         return tx.tx_outs[self.prev_index].script_pubkey
 
 
 class TxOut:
+
     def __init__(self, amount, script_pubkey):
         self.amount = amount
         self.script_pubkey = script_pubkey
@@ -131,6 +200,9 @@ class TxOut:
 
     @classmethod
     def parse(cls, s):
+        """Takes a byte stream and parses the tx_output at the start
+        return a TxOut object
+        """
         amount = little_endian_to_int(s.read(8))
         script_pubkey = Script.parse(s)
         return cls(amount, script_pubkey)
@@ -140,35 +212,3 @@ class TxOut:
         result = int_to_little_endian(self.amount, 8)
         result += self.script_pubkey.serialize()
         return result
-
-
-class TxFetcher:
-    cache = {}
-
-    @classmethod
-    def get_url(cls, testnet=False):
-        if testnet:
-            return "http://testnet.programmingbitcoin.com"
-        else:
-            return "http://mainnet.programmingbitcoin.com"
-
-    @classmethod
-    def fetch(cls, tx_id, testnet=False, fresh=False):
-        if fresh or (tx_id not in cls.cache):
-            url = "{}/tx/{}.hex".format(cls.get_url(testnet), tx_id)
-            response = requests.get(url)
-            try:
-                raw = bytes.fromhex(response.text.strip())
-            except ValueError:
-                raise ValueError("unexpected response: {}".format(response.text))
-            if raw[4] == 0:
-                raw = raw[:4] + raw[6:]
-                tx = Tx.parse(io.BytesIO(raw), testnet=testnet)
-                tx.locktime = little_endian_to_int(raw[-4:])
-            else:
-                tx = Tx.parse(io.BytesIO(raw), testnet=testnet)
-            if tx.id() != tx_id:
-                raise ValueError("not the same id: {} vs {}".format(tx.id(), tx_id))
-            cls.cache[tx_id] = tx
-            cls.cache[tx_id].testnet = testnet
-            return cls.cache[tx_id]
