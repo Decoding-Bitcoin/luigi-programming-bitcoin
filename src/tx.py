@@ -232,6 +232,21 @@ class Tx:
         # return whether sig is valid using self.verify_input
         return self.verify_input(input_index)
 
+    def is_coinbase(self):
+        """Returns whether this transaction is a coinbase transaction or not"""
+        # check that there is exactly 1 input
+        if len(self.tx_ins) != 1:
+            return False
+        # grab the first input
+        first_input = self.tx_ins[0]
+        # check that first input prev_tx is b'\x00' * 32 bytes
+        if first_input.prev_tx != b"\x00" * 32:
+            return False
+        # check that first input prev_index is 0xffffffff
+        if first_input.prev_index != 0xFFFFFFFF:
+            return False
+        return True
+
 
 class TxIn:
     def __init__(self, prev_tx, prev_index, script_sig=None, sequence=0xFFFFFFFF):
