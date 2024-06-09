@@ -5,6 +5,7 @@ from helper import (
     h160_to_p2sh_address,
     decode_base58,
     encode_base58_checksum,
+    calculate_new_bits,
 )
 
 
@@ -47,3 +48,9 @@ class TestHelper:
         assert h160_to_p2sh_address(h160, testnet=False) == want
         want = "2N3u1R6uwQfuobCqbCgBkpsgBxvr1tZpe7B"
         assert h160_to_p2sh_address(h160, testnet=True) == want
+
+    def test_calculate_new_bits(previous_bits):
+        prev_bits = bytes.fromhex("54d80118")
+        time_differential = 302400
+        want = bytes.fromhex("00157617")
+        assert calculate_new_bits(prev_bits, time_differential) == want
