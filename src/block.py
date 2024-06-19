@@ -1,4 +1,19 @@
-from helper import little_endian_to_int, int_to_little_endian, bits_to_target, hash256
+from helper import (
+    little_endian_to_int,
+    int_to_little_endian,
+    bits_to_target,
+    hash256,
+    read_varint,
+)
+
+
+GENESIS_BLOCK = bytes.fromhex(
+    "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c"
+)
+TESTNET_GENESIS_BLOCK = bytes.fromhex(
+    "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff001d1aa4ae18"
+)
+LOWEST_BITS = bytes.fromhex("ffff001d")
 
 
 class Block:
@@ -95,3 +110,28 @@ class Block:
         proof = little_endian_to_int(h256)
         # return whether this integer is less than the target
         return proof < self.target()
+
+
+class HeadersMessage:
+    command = b"headers"
+
+    def __init__(self, blocks):
+        self.blocks = blocks
+
+    @classmethod
+    def parse(cls, stream):
+        # number of headers is in a varint
+        num_headers = read_varint(stream)
+        # initialize the blocks array
+        blocks = []
+        # loop through number of headers times
+        for _ in range(num_headers):
+            # add a block to the blocks array by parsing the stream
+            blocks.append(Block.parse(stream))
+            # read the next varint (num_txs)
+            num_txs = read_varint(stream)
+            # num_txs should be 0 or raise a RuntimeError
+            if num_txs != 0:
+                raise RuntimeError("number of txs not 0")
+        # return a class instance
+        return cls(blocks)
