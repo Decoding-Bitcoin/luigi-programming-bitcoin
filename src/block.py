@@ -4,6 +4,7 @@ from helper import (
     bits_to_target,
     hash256,
     read_varint,
+    merkle_root,
 )
 
 
@@ -18,13 +19,16 @@ LOWEST_BITS = bytes.fromhex("ffff001d")
 
 class Block:
 
-    def __init__(self, version, prev_block, merkle_root, timestamp, bits, nonce):
+    def __init__(
+        self, version, prev_block, merkle_root, timestamp, bits, nonce, tx_hashes=None
+    ):
         self.version = version
         self.prev_block = prev_block
         self.merkle_root = merkle_root
         self.timestamp = timestamp
         self.bits = bits
         self.nonce = nonce
+        self.tx_hashes = tx_hashes
 
     # end::source1[]
 
@@ -110,6 +114,18 @@ class Block:
         proof = little_endian_to_int(h256)
         # return whether this integer is less than the target
         return proof < self.target()
+
+    def validate_merkle_root(self):
+        """
+        Gets the merkle root of the tx_hashes and checks that it's
+        the same as the merkle root of this block.
+        """
+        # reverse each item in self.tx_hashes
+        hashes = [h[::-1] for h in self.tx_hashes]
+        # compute the Merkle Root and reverse
+        root = merkle_root(hashes)[::-1]
+        # return whether self.merkle_root is the same
+        return root == self.merkle_root
 
 
 class HeadersMessage:
