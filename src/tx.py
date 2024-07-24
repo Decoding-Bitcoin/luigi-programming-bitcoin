@@ -11,7 +11,7 @@ from helper import (
     read_varint,
     SIGHASH_ALL,
 )
-from script import Script
+from script import Script, p2pkh_script
 
 
 class TxFetcher:
@@ -68,12 +68,16 @@ class TxFetcher:
 
 class Tx:
 
-    def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False):
+    def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False, segwit=False):
         self.version = version
         self.tx_ins = tx_ins  # <1>
         self.tx_outs = tx_outs
         self.locktime = locktime
         self.testnet = testnet  # <2>
+        self.segwit = segwit
+        self._hash_prevouts = None
+        self._hash_sequence = None
+        self._hash_outputs = None
 
     def __repr__(self):
         tx_ins = ""
@@ -100,10 +104,17 @@ class Tx:
 
     @classmethod
     def parse(cls, s, testnet=False):
-        """Takes a byte stream and parses the transaction at the start
-        return a Tx object
-        """
-        version = little_endian_to_int(s.read(4))
+        s.read(4)  # <1>
+        if s.read(1) == b"\x00":  # <2>
+            parse_method = cls.parse_segwit
+        else:
+            parse_method = cls.parse_legacy
+        s.seek(-5, 1)  # <3>
+        return parse_method(s, testnet=testnet)
+
+    @classmethod
+    def parse_legacy(cls, s, testnet=False):
+        version = little_endian_to_int(s.read(4))  # <4>
         num_inputs = read_varint(s)
         inputs = []
         for _ in range(num_inputs):
@@ -113,10 +124,42 @@ class Tx:
         for _ in range(num_outputs):
             outputs.append(TxOut.parse(s))
         locktime = little_endian_to_int(s.read(4))
-        return cls(version, inputs, outputs, locktime, testnet=testnet)
+        return cls(version, inputs, outputs, locktime, testnet=testnet, segwit=False)
+
+    @classmethod
+    def parse_segwit(cls, s, testnet=False):
+        version = little_endian_to_int(s.read(4))
+        marker = s.read(2)
+        if marker != b"\x00\x01":  # <1>
+            raise RuntimeError("Not a segwit transaction {}".format(marker))
+        num_inputs = read_varint(s)
+        inputs = []
+        for _ in range(num_inputs):
+            inputs.append(TxIn.parse(s))
+        num_outputs = read_varint(s)
+        outputs = []
+        for _ in range(num_outputs):
+            outputs.append(TxOut.parse(s))
+        for tx_in in inputs:  # <2>
+            num_items = read_varint(s)
+            items = []
+            for _ in range(num_items):
+                item_len = read_varint(s)
+                if item_len == 0:
+                    items.append(0)
+                else:
+                    items.append(s.read(item_len))
+            tx_in.witness = items
+        locktime = little_endian_to_int(s.read(4))
+        return cls(version, inputs, outputs, locktime, testnet=testnet, segwit=True)
 
     def serialize(self):
-        """Returns the byte serialization of the transaction"""
+        if self.segwit:
+            return self.serialize_segwit()
+        else:
+            return self.serialize_legacy()
+
+    def serialize_legacy(self):  # <1>
         result = int_to_little_endian(self.version, 4)
         result += encode_varint(len(self.tx_ins))
         for tx_in in self.tx_ins:
@@ -124,6 +167,25 @@ class Tx:
         result += encode_varint(len(self.tx_outs))
         for tx_out in self.tx_outs:
             result += tx_out.serialize()
+        result += int_to_little_endian(self.locktime, 4)
+        return result
+
+    def serialize_segwit(self):
+        result = int_to_little_endian(self.version, 4)
+        result += b"\x00\x01"  # <2>
+        result += encode_varint(len(self.tx_ins))
+        for tx_in in self.tx_ins:
+            result += tx_in.serialize()
+        result += encode_varint(len(self.tx_outs))
+        for tx_out in self.tx_outs:
+            result += tx_out.serialize()
+        for tx_in in self.tx_ins:  # <3>
+            result += int_to_little_endian(len(tx_in.witness), 1)
+            for item in tx_in.witness:
+                if type(item) == int:
+                    result += int_to_little_endian(item, 1)
+                else:
+                    result += encode_varint(len(item)) + item
         result += int_to_little_endian(self.locktime, 4)
         return result
 
@@ -177,6 +239,28 @@ class Tx:
         h256 = hash256(s)
         # convert the result to an integer using int.from_bytes(x, 'big')
         return int.from_bytes(h256, "big")
+    
+    def sig_hash_bip143(self, input_index, redeem_script=None, witness_script=None):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
+        tx_in = self.tx_ins[input_index]
+        # per BIP143 spec
+        s = int_to_little_endian(self.version, 4)
+        s += self.hash_prevouts() + self.hash_sequence()
+        s += tx_in.prev_tx[::-1] + int_to_little_endian(tx_in.prev_index, 4)
+        if witness_script:
+            script_code = witness_script.serialize()
+        elif redeem_script:
+            script_code = p2pkh_script(redeem_script.cmds[1]).serialize()
+        else:
+            script_code = p2pkh_script(tx_in.script_pubkey(self.testnet).cmds[1]).serialize()
+        s += script_code
+        s += int_to_little_endian(tx_in.value(), 8)
+        s += int_to_little_endian(tx_in.sequence, 4)
+        s += self.hash_outputs()
+        s += int_to_little_endian(self.locktime, 4)
+        s += int_to_little_endian(SIGHASH_ALL, 4)
+        return int.from_bytes(hash256(s), 'big')
 
     def verify_input(self, input_index):
         """Returns whether the input has a valid signature"""
@@ -184,25 +268,44 @@ class Tx:
         tx_in = self.tx_ins[input_index]
         # grab the previous ScriptPubKey
         script_pubkey = tx_in.script_pubkey(testnet=self.testnet)
-        # check to see if the ScriptPubkey is a p2sh using
-        # Script.is_p2sh_script_pubkey()
+        # check to see if the ScriptPubkey is a p2sh
         if script_pubkey.is_p2sh_script_pubkey():
-            # the last cmd in a p2sh is the RedeemScript
+            # the last cmd has to be the RedeemScript to trigger
             cmd = tx_in.script_sig.cmds[-1]
-            # prepend the length of the RedeemScript using encode_varint
-            raw_redeem = encode_varint(len(cmd)) + cmd
             # parse the RedeemScript
+            raw_redeem = int_to_little_endian(len(cmd), 1) + cmd
             redeem_script = Script.parse(BytesIO(raw_redeem))
-        # otherwise RedeemScript is None
+            # the RedeemScript might be p2wpkh or p2wsh
+            if redeem_script.is_p2wpkh_script_pubkey():
+                z = self.sig_hash_bip143(input_index, redeem_script)
+                witness = tx_in.witness
+            elif redeem_script.is_p2wsh_script_pubkey():
+                cmd = tx_in.witness[-1]
+                raw_witness = encode_varint(len(cmd)) + cmd
+                witness_script = Script.parse(BytesIO(raw_witness))
+                z = self.sig_hash_bip143(input_index, witness_script=witness_script)
+                witness = tx_in.witness
+            else:
+                z = self.sig_hash(input_index, redeem_script)
+                witness = None
         else:
-            redeem_script = None
-        # get the signature hash (z)
-        # pass the RedeemScript to the sig_hash method
-        z = self.sig_hash(input_index, redeem_script)
+            # ScriptPubkey might be a p2wpkh or p2wsh
+            if script_pubkey.is_p2wpkh_script_pubkey():
+                z = self.sig_hash_bip143(input_index)
+                witness = tx_in.witness
+            elif script_pubkey.is_p2wsh_script_pubkey():
+                cmd = tx_in.witness[-1]
+                raw_witness = encode_varint(len(cmd)) + cmd
+                witness_script = Script.parse(BytesIO(raw_witness))
+                z = self.sig_hash_bip143(input_index, witness_script=witness_script)
+                witness = tx_in.witness
+            else:
+                z = self.sig_hash(input_index)
+                witness = None
         # combine the current ScriptSig and the previous ScriptPubKey
-        combined = Script(tx_in.script_sig.cmds + script_pubkey.cmds)
+        combined = tx_in.script_sig + script_pubkey
         # evaluate the combined script
-        return combined.evaluate(z)
+        return combined.evaluate(z, witness)
 
     def verify(self):
         """Verify this transaction"""
